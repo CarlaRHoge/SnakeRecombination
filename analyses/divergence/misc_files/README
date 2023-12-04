@@ -1,0 +1,11 @@
+# Get stats from outgroup genome (Thamnophis elengas, but could be changed?)
+halStats --bedSequences Thamnophis_elegans ../hals/snakes_hm2.hal | cut -f1,3 | awk '{if (($2>500000)) print}' | grep -v NC_045558.1 > Thamnophis_elegans.genome
+
+# Get motif sequences
+grep MOTIF ../motifs/streme_p05.txt | awk '{print $2}' | cut -d"-" -f2 > motifs.txt
+grep MOTIF ../motifs/streme_p05.txt | awk '{print $2}' | cut -d"-" -f2 | sed 's/[^acgtACGT]/N/g' > motifs.txt
+
+# Process motifs
+python process_motifs.py
+
+

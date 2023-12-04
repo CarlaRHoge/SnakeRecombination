@@ -1,0 +1,7 @@
+ls ../cpgi/*gz | \
+while read bed;do 
+  tabix -l $bed;
+done | sort | uniq -c | awk '{if (($1==4)) print $2}' | sort > scaffolds.txt
+
+while read scaf;do if [ -e ../rmaps/${scaf}_bp20_cf1_lkupd.bed ];then echo $scaf;fi;done < ../misc_files/scaffolds.txt > scaffolds_rmap.txt
+

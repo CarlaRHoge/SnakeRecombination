@@ -1,0 +1,17 @@
+scaffold-ma1:1-311712589
+scaffold-ma2:1-230514893
+scaffold-ma3
+scaffold-ma4:1-103290658
+scaffold-ma5:1-87326383
+scaffold-ma6:1-69529916
+scaffold-ma7
+scaffold-mi1
+scaffold-mi2
+scaffold-mi3
+scaffold-mi4
+scaffold-mi5
+scaffold-mi6
+scaffold-mi7
+scaffold-mi8
+scaffold-mi9
+scaffold-mi10
