@@ -1,0 +1,278 @@
+islands = {"corn":["cpgplotdef", "hmm"],"rattle":["cpgplot_default", "cpgplot_schield"]}           
+species = ["corn", "rattle"]
+spots = ["hotspots", "coldspots"]
+fams = ["fam1", "fam2", "fam3"]
+#prdm9_alleles = ["PRDM9-{}".format(l) for l in ["I","G","M","J"]]
+#prdm9_alleles_fams = prdm9_alleles #+ fams
+
+prdm9_alleles = ["fam1M","fam1P","fam2M","fam2P","fam3M","fam3P"]
+snps = ["NoSNP", "SNP"]
+#prdm9_alleles = ["fam1M.NoSNP","fam1M.SNP", "fam2M.NoSNP","fam2M.SNP", "fam3M.NoSNP","fam3M.SNP"]
+
+fams = prdm9_alleles
+#prdm9_alleles = fams
+reps = range(1,3000)
+#reps = range(2500,3000)
+
+with open("repeats/repeats_aboveN500.txt", "r") as fh:
+    repeats = [line.strip().replace("/",".") for line in fh]
+
+rule all:
+    input: 
+        #expand("spots/corn.hotspots.usedthroghout.bed", fam=fams),
+        #expand("shuf/{fam}/original.{allele}.crossovers.bed", fam=fams),
+        #expand("shuf/{fam}/original.{fam}.{snp}.crossovers.bed", fam=fams, snp=snps),
+        #expand("info_sites/{fam}.bed.gz", fam=fams),
+        #expand("shuf/{fam}/crossovers.{allele}.{r}.closeshuf.bed", fam=fams, r=reps, allele=prdm9_alleles)
+        #"misc_files/crossids_nonhot.txt"
+        #expand("prdm9/corn.prdm9.noI.{fam}.bed", fam=fams),
+#        "results/crossover.closeshuf.tab.gz",
+#        expand("shuf/{fam}/crossovers.{fam}.{r}.closeshuf.bed", fam=fams, r=reps[1:])
+        #"misc_files/crossover2parent.tab"
+        expand("shuf/{fam}/crossovers.{fam}.closeshuf.{snp}.bed", fam=fams, snp=snps),
+        "results/crossover.closeshuf.snps.tab.gz"
+        #expand("repeat_overlap/{fam}.bed", fam=fams)
+        #expand("results/crossover.closeshuf.tab.gz", fam=prdm9_alleles_fams)
+        #"misc_files/crossover2parent.tab"
+        #"keep_shuf/annotated_shufs.bed.gz"
+
+rule og_crossovers:
+    input: 
+        hot = "spots/corn.hotspots.usedthroghout.bed",
+        gsize = "gsizes/corn.genome",
+        isl = "cpgi/corn.hmm.tss.bed.gz",
+        prdm9 = "prdm9/corn.prdm9.{fam}.bed",
+        bed = "final_crossovers/Crossovers.{fam}.below20kb.bed"
+    output: 
+        "shuf/{fam}/original.{fam}.crossovers.bed"
+    resources:
+        time = 60,
+        cpus = 1
+    shell: 
+        "cut -f1-3 {input.bed} | ~/bin/add_bed_id.sh "
+        "| egrep -v  '1228900|371027'"
+        "| bedtools sort -i - "
+        "| bedtools closest -a - -b <(bedtools sort -i {input.isl}) -d -t first "
+        "| bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first "
+        "| bedtools closest -a - -b <(cut -f1-3 {input.hot} | bedtools sort -i) -d -t first "
+        "| python ~/bin/keep_only_dist.py -i 4 "
+        "| python ~/bin/add_comma_list_as_tabs.py "
+        "-l 0,{wildcards.fam},{wildcards.fam} > {output}"
+
+rule og_snp_crossovers:
+    input: 
+        hot = "spots/corn.hotspots.usedthroghout.bed",
+        gsize = "gsizes/corn.genome",
+        isl = "cpgi/corn.hmm.tss.bed.gz",
+        prdm9 = "prdm9/corn.prdm9.{fam}.{snp}.bed",
+        bed = "final_crossovers/Crossovers.{fam}.below20kb.bed"
+    output: 
+        "shuf/{fam}/original.{fam}.{snp}.crossovers.bed"
+    resources:
+        time = 60,
+        cpus = 1
+    shell: 
+        "cut -f1-3 {input.bed} | ~/bin/add_bed_id.sh "
+        "| egrep -v  '1228900|371027'"
+        "| bedtools sort -i - "
+        "| bedtools closest -a - -b <(bedtools sort -i {input.isl}) -d -t first "
+        "| bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first "
+        "| bedtools closest -a - -b <(cut -f1-3 {input.hot}  | bedtools sort -i) -d -t first "
+        "| python ~/bin/keep_only_dist.py -i 4 "
+        "| python ~/bin/add_comma_list_as_tabs.py "
+        "-l 0,{wildcards.fam},{wildcards.snp} > {output}"
+
+rule shuf_snps:
+    input: 
+        hot = "spots/corn.hotspots.usedthroghout.bed",
+        #bed = expand("shuf/{{fam}}/crossovers.{{fam}}.{r}.closeshuf.bed", r=reps),
+        og_bed = "shuf/{fam}/original.{fam}.{snp}.crossovers.bed",
+        gsize = "gsizes/corn.genome",
+        isl = "cpgi/corn.hmm.tss.bed.gz",
+        prdm9 = "prdm9/corn.prdm9.{fam}.{snp}.bed"
+    output:
+        "shuf/{fam}/crossovers.{fam}.closeshuf.{snp}.bed"
+    shell:
+        '''
+        cat <(\
+        cut -f1-4,8 shuf/{wildcards.fam}/crossovers.{wildcards.fam}.{{2..2999}}.closeshuf.bed \
+        | bedtools sort -i - \
+        | bedtools closest -a - -b <(bedtools sort -i {input.isl}) -d -t first \
+        | bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first \
+        | bedtools closest -a - -b <(cut -f1-3 {input.hot} | bedtools sort -i) -d -t first \
+        | python ~/bin/keep_only_dist.py -i 5 \
+        | python ~/bin/add_comma_list_as_tabs.py \
+        -l {wildcards.fam},{wildcards.snp} \
+        | awk 'BEGIN {{OFS="\\t"}} {{print$1,$2,$3,$4,$6,$7,$8,$5,$9,$10}}') \
+        {input.og_bed} > {output}
+        ''' 
+
+rule crossovers_close_shuf_spots_minisites:
+    input: 
+        hot = "spots/corn.hotspots.usedthroghout.bed",
+        gsize = "gsizes/corn.genome",
+        gaps = "gaps/corn.gaps.bed",
+        isl = "cpgi/corn.hmm.tss.bed.gz",
+        prdm9 = "prdm9/corn.prdm9.{fam}.bed",
+        bed = "final_crossovers/Crossovers.{fam}.below20kb.bed",
+        nonhot = "/moto/palab/projects/recombination_snakes/corn_snakes/hotspots/CouldNotBeAHotspot.bed",
+        #rmsk = "/moto/palab/users/crh2152/projects/CS_vcfs/NewGenome/CS_superscaffold_repeat_mappability_mask.bed"
+    output: 
+        bed = "shuf/{fam}/crossovers.{fam}.{r}.closeshuf.bed",
+        tmp = temp("tmp/corn.crossovers.{fam}.{fam}.{r}.excl.bed")
+    params:
+        easy_fam = lambda wcs: wcs.fam[:4]
+    resources:
+        time = 60,
+        cpus = 1
+    shell: 
+        """
+        cat {input.bed} | cut -f1-3 > {output.tmp};
+        cat {input.gaps} >> {output.tmp};
+        cat {input.nonhot} >> {output.tmp};
+        while read spot;do
+          read scaf start end id region <<<$(echo $spot);
+          sex=$(echo $id | cut -d"-" -f1);
+          incl=$(echo "$spot" | bedtools slop -i - -g {input.gsize} -b 2500000);
+          for r in $(seq 300);do \
+            shuf=$(echo "$spot" | cut -f1-3,5 | bedtools shuffle -i - -g gsizes/corn.genome \
+            -noOverlapping -maxTries 300000 -excl <(cut -f1-3 {output.tmp}) -incl <(echo "$incl")); \
+            n_isites=$(echo "$shuf" | bedtools intersect \
+            -a own_crossovers/$scaf.$sex.infosites.{params.easy_fam}.bed -b - -u | wc -l); 
+            if [[ "$n_isites" -ge 2 ]]; then \
+              break; 
+            fi;
+          done
+          echo "$shuf" | cut -f1-3 >> {output.tmp};
+          echo "$shuf" | bedtools sort -i - \
+          | bedtools closest -a - -b <(bedtools sort -i {input.isl}) -d -t first \
+          | bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first \
+          | bedtools closest -a - -b <(cut -f1-3 {input.hot} | bedtools sort -i) -d -t first \
+          | python ~/bin/keep_only_dist.py -i 4 \
+          | python ~/bin/add_comma_list_as_tabs.py -l {wildcards.r},{wildcards.fam},{wildcards.fam};
+        done < <(cut -f1-4 {input.bed} | egrep -v  '1228900|371027' | ~/bin/add_bed_id.sh) > {output.bed}
+        """
+
+rule merge_crossover_shuf_results:
+    input: 
+        shuf = expand("shuf/{fam}/crossovers.{fam}.{r}.closeshuf.bed", fam=fams, r=reps[1:]),
+        og = expand("shuf/{fam}/original.{fam}.crossovers.bed", fam=fams)
+    output: 
+        "results/crossover.closeshuf.tab.gz"
+    shell: 
+        "cat {input.og} {input.shuf} | gzip > {output}"
+
+rule merge_crossover_shuf_results_snps:
+    input: 
+        beds = expand("shuf/{fam}/crossovers.{fam}.closeshuf.{snp}.bed", fam=fams, snp=snps)
+    output: 
+        "results/crossover.closeshuf.snps.tab.gz"
+    shell: 
+        "cat {input.beds} | gzip > {output}"
+
+# rule collect_infosites:
+#     output: 
+#         "info_sites/{fam}.bed.gz"
+#     shell: 
+#         "cat own_crossovers/Super_scaffold_*infosites.{wildcards.fam}.bed "
+#         "| bedtools sort -i - | bgzip > {output};"
+#         "tabix -p bed {output}"
+
+# rule sel_hotspots_in_fam:
+#     input: 
+#         hot = "spots/corn.hotspots.bed",
+#         prdm9 = "prdm9/corn.prdm9.{fam}.bed",
+#         cpgi = "cpgi/corn.hmm.tss.bed.gz"
+#     output: 
+#         "spots/corn.hotspots.usedthroghout.bed"
+#     shell: 
+#         "bedtools intersect -a {input.hot} -b {input.prdm9} -wa -u > {output}"
+
+# rule crossovers_in_nonhotspot_regions:
+#     input: 
+#         cross = expand("calling/merged_crossovers/Crossovers.{fam}.below20kb.bed", fam=fams),
+#         nonhot = "/moto/palab/projects/recombination_snakes/corn_snakes/hotspots/CouldNotBeAHotspot.bed"
+#     output: 
+#         "misc_files/crossids_nonhot.txt"
+#     shell: 
+#         "cat {input.cross} | bedtools intersect -a - -b {input.nonhot} -wa "
+#         "| awk '{{print $1\":\"$2\"-\"$3}}' "
+#         "| while read region;do printf \"'\"$region\"',\";done > {output}"
+
+# rule comp_repeats_in_crossovers:
+#     input: 
+#         rmsk = "../expected_overlap/misc_files/repeat_map_mask.bed",
+#         gaps = "gaps/corn.gaps.bed",
+#         gsize = "gsizes/corn.genome",
+#         bed = "calling/merged_crossovers/Crossovers.{fam}.below20kb.bed"
+#     output:
+#         "repeat_overlap/{fam}.bed"
+#     shell: 
+#         """
+#         bedtools annotate -i {input.bed} -files {input.rmsk} {input.gaps} \
+#         | python ~/bin/add_comma_list_as_tabs.py -l 0 > {output};
+#         for r in $(seq 1 100);do
+#             bedtools shuffle -i {input.bed} -g {input.gsize} -noOverlapping \
+#            -chrom -maxTries 100000 \
+#            -incl <(bedtools slop -i {input.bed} -g {input.gsize} -b 2500000) \
+#            | bedtools annotate -i - -files {input.rmsk} {input.gaps} \
+#            | python ~/bin/add_comma_list_as_tabs.py -l $r >> {output};
+#         done
+#         """
+# rule crossover_to_parent_of_origin:
+#     input: 
+#         "final_crossovers/Crossovers.all.below20kb.bed"
+#     output: 
+#         "misc_files/crossover2parent.tab"
+#     shell: 
+#         """
+#         awk '{{split($4,a,"-");print $1":"$2"-"$3"\\t"a[1]}}' {input} > {output}
+#         """
+
+# rule annotate_shuf:
+#     input: 
+#         repeats = expand("repeats/{repeat}.bed.gz", repeat=repeats),
+#     output: 
+#         "keep_shuf/annotated_shufs.bed.gz"
+#     shell: 
+#         """
+#         cat keep_shuf/*/*bed \
+#         | bedtools annotate -i - -both -files {input.repeats} \
+#         | bgzip > {output}
+#         """
+
+        # rule crossovers_close_shuf_spots:
+#     input: 
+#         hot = "spots/corn.hotspots.usedthroghout.bed",
+#         gsize = "gsizes/corn.genome",
+#         gaps = "gaps/corn.gaps.bed",
+#         isl = "cpgi/corn.hmm.tss.bed.gz",
+#         prdm9 = "prdm9/corn.prdm9.{allele}.bed",
+#         bed = "final_crossovers/Crossovers.{fam}.below20kb.bed",
+#         nonhot = "/moto/palab/projects/recombination_snakes/corn_snakes/hotspots/CouldNotBeAHotspot.bed",
+#         #rmsk = "/moto/palab/users/crh2152/projects/CS_vcfs/NewGenome/CS_superscaffold_repeat_mappability_mask.bed"
+#     output: 
+#         bed = "shuf/{fam}/crossovers.{allele}.{r}.closeshuf.bed",
+#         tmp = temp("tmp/corn.crossovers.{allele}.{fam}.{r}.excl.bed")
+#     resources:
+#         time = 30,
+#         cpus = 1
+#     shell: 
+#         """
+#         cat {input.bed} | cut -f1-3 > {output.tmp};
+#         cat {input.gaps} >> {output.tmp};
+#         cat {input.nonhot} >> {output.tmp};
+#         while read spot;do
+#           read scaf start end id <<<$(echo $spot);
+#           incl=$(echo "$spot" | bedtools slop -i - -g {input.gsize} -b 2500000);
+#           shuf=$(echo "$spot" | bedtools shuffle -i - -g {input.gsize} -noOverlapping \
+#            -chrom -maxTries 300000 -excl <(cut -f1-3 {output.tmp}) -incl <(echo "$incl"));
+#           echo "$shuf" | cut -f1-3 >> {output.tmp};
+#           echo "$shuf" | bedtools sort -i - \
+#           | bedtools closest -a - -b <(bedtools sort -i {input.isl}) -d -t first \
+#           | bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first \
+#           | bedtools closest -a - -b <(cut -f1-3 {input.hot} | bedtools sort -i) -d -t first \
+#           | python ~/bin/keep_only_dist.py -i 4 \
+#           | python ~/bin/add_comma_list_as_tabs.py -l {wildcards.r},{wildcards.fam},{wildcards.allele};
+#         done < <(cut -f1-3 {input.bed} | ~/bin/add_bed_id.sh) > {output.bed}
+#         """

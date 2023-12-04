@@ -1,0 +1,90 @@
+
+outgroup = "Thamnophis_elegans"
+with open(f"misc_files/{outgroup}.windows", "r") as fh:
+    chunks = [line.strip() for line in fh]
+with open("misc_files/motifs.txt", "r") as fh:
+    motifs = [line.strip() for line in fh]
+
+refs = ["Thamnophis_elegans", "Anc6"]
+
+rule all:
+    input: 
+        expand("mafs/{chunk}.maf", chunk=chunks),
+        expand("results/{chunk}.txt", chunk=chunks),
+        "results/all.txt",
+#        expand("mafs_carla/{ref}.maf", ref=refs),
+#        expand("mafs_carla/{ref}.fasta", ref=refs)
+
+rule hal2maf:
+    input: 
+        hal = "hals/snakes_hm2.hal"
+    output: 
+        maf = "mafs/{chunk}.maf"
+    params:
+        chrom = lambda wcs: wcs.chunk.split(":")[0],
+        start = lambda wcs: wcs.chunk.split(":")[1].split("-")[0],
+        lngth = lambda wcs: int(wcs.chunk.split(":")[1].split("-")[1]) - int(wcs.chunk.split(":")[1].split("-")[0]),
+        sps = "Pantherophis_guttatus,Pantherophis_obsoletus,Anc6",
+        outg = outgroup
+    shell: 
+        '''
+        hal2maf {input} {output} --refGenome {params.outg} \
+        --refSequence {params.chrom} --start {params.start} --length {params.lngth} \
+        --onlyOrthologs --noDupes --targetGenomes {params.sps}
+        '''
+
+rule score_gains_loses:
+    input: 
+        maf = "mafs/{chunk}.maf",
+        sps = "misc_files/species.txt",
+        motifs = "misc_files/motifs.txt"
+    output: 
+        "results/{chunk}.txt"
+    params:
+        outg = "Thamnophis_elegans"
+    shell:
+        '''
+        while read comp_motif;do \
+          motif=$(echo $comp_motif | cut -d"_" -f1); \
+          og_motif=$(echo $comp_motif | cut -d"_" -f2)
+          python scripts/count_gains_loses.py \
+          -m {input.maf} \
+          -f {input.sps} \
+          -r {params.outg} \
+          -t $motif \
+          | python ~/bin/add_cl.py -l {wildcards.chunk},$motif,$og_motif; \
+        done < {input.motifs} > {output}
+        '''
+
+rule merge_results:
+    input: 
+        expand("results/{chunk}.txt", chunk=chunks)
+    output: 
+        "results/all.txt"
+    shell: 
+        "cat {input} | gzip > {output}"
+
+rule hal2maf_carla:
+    input: 
+        hal = "hals/snakes_hm2.hal"
+    output: 
+        maf = "mafs_carla/{ref}.maf"
+    params:
+        sps = "Pantherophis_guttatus,Pantherophis_obsoletus",
+        outg = outgroup
+    shell: 
+        '''
+        hal2maf {input.hal} {output.maf} --refGenome {wildcards.ref} \
+        --onlyOrthologs --noDupes --targetGenomes {params.sps}
+        '''
+
+rule convert2fasta:
+    input: 
+        maf = "mafs_carla/{ref}.maf",
+        sps = "misc_files/{ref}.txt"
+    output: 
+        "mafs_carla/{ref}.fasta"
+    shell: 
+        "cat {input} "
+        "| python scripts/convert_maf2fasta.py -f {input.sps} -r {wildcards.ref} -m - "
+        "> {output}"

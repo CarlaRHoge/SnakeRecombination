@@ -1,0 +1,94 @@
+wsizes = [25,50,100] #,250,500]
+fasta = "fastas/corn/CS_superscaffold.renamed.fasta.masked.fasta"
+with open("misc_files/scaffolds_rmap.txt","r") as fh:
+    scaffolds = [line.strip() for line in fh]
+
+rule all:
+    input: 
+        #expand("cpgi/corn.cpgplot_ws{ws}.bed.gz", ws=wsizes),
+        #expand("cpgi_isec/venn.{ws}.bed.gz", ws=wsizes)
+        expand("feat_dist/{ws}.{scaf}.tab.gz", ws=wsizes, scaf=scaffolds),
+        "feat_dist/merged.tab.gz"
+
+rule use_cpgplot:
+    input: 
+        fasta = fasta
+    output: 
+        bed = "cpgi/corn.cpgplot_ws{ws}.bed.gz",
+        gff = "cpgplot/ws{ws}.tmp.gff",
+        out = "cpgplot/ws{ws}.tmp.out"
+    resources:
+        time = 30,
+        cpus = 1
+    shell: 
+        """
+        PATH=$(echo $PATH":/moto/palab/users/md3914/software/emboss/bin");
+        /moto/palab/users/md3914/software/emboss/bin/cpgplot \
+        -sequence {input.fasta} \
+        -outfile {output.out} \
+        -window {wildcards.ws} \
+        -minlen 200 \
+        -minoe 0.6 \
+        -minpc 50 \
+        -graph png \
+        -outfeat {output.gff} \
+        -plot No;
+        grep -v "#" {output.gff} \
+        | awk '{{print $1"\t"$4-1"\t"$5}}' \
+        | bedtools sort -i - \
+        | bgzip > {output.bed};
+        tabix -p bed {output.bed}
+        """
+
+rule venn_islands:
+    input:
+        hmm = "cpgi/corn.hmm.bed.gz",
+        cpgplot = "cpgi/corn.cpgplot_ws{ws}.bed.gz"
+    output:
+        venn = "cpgi_isec/venn.{ws}.bed.gz"
+    resources:
+        time = 30,
+        cpus = 1
+    shell: 
+        """
+        cat \
+        <(zcat {input.hmm} | awk '{{print $1"\t"$2+1"\t"$3"\thmm"}}') \
+        <(zcat {input.cpgplot} |  awk '{{print $1"\t"$2+1"\t"$3"\tcpgplot"}}') \
+        | bedtools sort -i - \
+        | bedtools merge -i - -c 4 -o collapse \
+        | bgzip > {output.venn};
+        tabix -p bed {output.venn}
+        """
+
+rule recomb_distance:
+    input: 
+        cpgi = "cpgi_isec/venn.{ws}.bed.gz",
+        rmap = "rmaps/{scaf}_bp20_cf1_lkupd.bed",
+        gsize = "gsizes/{scaf}.txt"
+    output: 
+        "feat_dist/{ws}.{scaf}.tab.gz"
+    resources:
+        time = 30,
+        cpus = 1
+    shell: 
+        """
+        bedtools makewindows -g {input.gsize} -w 100 | \
+        bedmap --echo --skip-unmapped --wmean - <(awk '{{print $1"\t"$2"\t"$3"\trecomb\t"$4}}' {input.rmap}) | \
+        sed "s/|/\t/g" | \
+        bedtools closest -a - -b <(tabix {input.cpgi} {wildcards.scaf} | awk '{{if (($NF=="hmm")) print}}' | cut -f1-3) -d -t first | \
+        bedtools closest -a - -b <(tabix {input.cpgi} {wildcards.scaf} | awk '{{if (($NF=="cpgplot")) print}}' | cut -f1-3) -d -t first | \
+        bedtools closest -a - -b <(tabix {input.cpgi} {wildcards.scaf} | grep hmm | grep cpgplot | cut -f1-3) -d -t first | \
+        python ~/bin/keep_only_dist.py -i 4 | \
+        python ~/bin/add_cl.py -l {wildcards.ws} | \
+        gzip > {output};
+        """
+
+rule merge_distances:
+    input: 
+        expand("feat_dist/{ws}.{scaf}.tab.gz", ws=wsizes, scaf=scaffolds)
+    output:
+        "feat_dist/merged.tab.gz"
+    shell:
+        "cat {input} > {output}"
+
+

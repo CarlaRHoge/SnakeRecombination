@@ -1,0 +1,81 @@
+tissues = ["kidney", "testis"]
+reps = ["rep1", "rep2"]
+marks = ["h3k4","h3k36"]
+prdm9s = ['PRDM9-A','PRDM9-B','PRDM9-C','PRDM9-D','PRDM9-E','PRDM9-F','PRDM9-G','PRDM9-H','PRDM9-I','PRDM9-J','PRDM9-K','PRDM9-L','PRDM9-M','PRDM9-N']
+
+rule all:
+    input: 
+        expand("peaks/{tissue}-{rep}-{mark}.bed", tissue=tissues, rep=reps, mark=marks),
+        expand("peaks/{tissue}-{mark}.bed", tissue=tissues, mark=marks),
+        expand("overlap/{prdm9}.{tissue}.3way.tab", prdm9=prdm9s, tissue=tissues)
+
+rule convert2bed:
+    input: 
+        "peaks/{tissue}-{rep}-{mark}-peaks"
+    output: 
+        "peaks/{tissue}-{rep}-{mark}.bed"
+    shell: 
+        "grep -v '#' {input} | cut -f2-4,11 | bedtools sort -i - > {output}"
+
+rule merge_reps:
+    input: 
+        expand("peaks/{{tissue}}-{rep}-{{mark}}.bed", rep=reps)
+    output: 
+        "peaks/{tissue}-{mark}.bed"
+    shell: 
+        "cat {input} "
+        "| bedtools sort "
+        "| bedtools merge -i - -c 4,4 -o mean,count > {output}"
+
+rule overlap_k4k36:
+    input: 
+        k4 = "peaks/{tissue}-h3k4.bed",
+        k36 = "peaks/{tissue}-h3k36.bed",
+        gsize = "misc_files/corn.genome"
+    output: 
+        "overlap/{tissue}.tab"
+    params:
+        awk_cmd = "awk '{{if (($NF!=-1) && ($NF<500)) print}}' | wc -l"
+    shell: 
+        """
+        bedtools closest -a {input.k4} -b {input.k36} -d -t first \
+        | {params.awk_cmd} > {output};
+        for i in $(seq 200);do \
+          bedtools closest \
+          -a <(bedtools shuffle -i {input.k4} -chrom -noOverlapping -excl {input.k4} -g {input.gsize} | bedtools sort -i - ) \
+          -b <(bedtools shuffle -i {input.k36} -chrom -noOverlapping -excl {input.k36} -g {input.gsize} | bedtools sort -i - ) \
+          -d -t first | {params.awk_cmd};
+        done >> {output}
+        """
+
+rule threesome:
+    input: 
+        prdm9 = "bsites/{prdm9}_PWM_1E5200k/fimo_50k_merged.bed",
+        k4 = "peaks/{tissue}-h3k4.bed",
+        k36 = "peaks/{tissue}-h3k36.bed",
+        gsize = "misc_files/corn.genome"
+    output: 
+        "overlap/{prdm9}.{tissue}.3way.tab"
+    params:
+        awk_cmd = "awk '{{if (($NF!=-1) && ($NF<500)) print}}' | wc -l"
+    resources:
+        time = 1
+    shell: 
+        """
+        bedtools closest -a {input.prdm9} -b {input.k4} -d -t first \
+        | bedtools closest -a - -b {input.k36} -d -t first \
+        | python ~/bin/keep_only_distances_v2.py -i 0,4 -c Super \
+        | grep -v "\-1" \
+        | python ~/bin/add_cl.py -l 0 > {output};
+        for i in $(seq 50);do \
+            bedtools shuffle -i {input.prdm9} -chrom -noOverlapping -excl {input.prdm9} -g {input.gsize} | bedtools sort -i - \
+            | bedtools closest -a - -b {input.k4} -d -t first \
+            | bedtools closest -a - -b {input.k36} -d -t first \
+            | python ~/bin/keep_only_distances_v2.py -i 0,4 -c Super \
+            | grep -v "\-1" \
+            | python ~/bin/add_cl.py -l $i;
+        done >> {output}
+        """
+
+
+

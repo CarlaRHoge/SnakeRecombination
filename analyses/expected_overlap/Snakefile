@@ -1,0 +1,232 @@
+islands = {"corn":["cpgplot", "hmm.tss"],"rattle":["cpgplot_default", "cpgplot_schield"]}           
+species = ["corn"]
+spots = ["hotspots", "coldspots"]
+fams = ["fam1", "fam2"]
+crossFile = "/moto/palab/projects/recombination_snakes/shared_corn_rattle/crossovers/final_crossovers/Crossovers.all.below20kb.bed"
+
+rule all:
+    input: 
+        expand("shuf/{sp}/{spot}.{r}.closeshuf.bed", sp=species, spot=spots, r=range(500)),
+        #expand("shuf/corn/crossovers.{r}.closeshuf.bed", r=range(500)),
+        #"shuf/corn/original.crossovers.bed"
+        #"results/merged.tab.gz"
+        "results/merged.closeshuf.tab.gz",
+        #"results/merged.crossover.closeshuf.tab.gz"
+        #expand("spots/corn.hotspots.{fam}.bed", fam=fams)
+
+rule og_spots:
+    input: 
+        bed = "spots/{sp}.{spot}.bed",
+        heat = "spots/{sp}.hotspots.bed",
+        gsize = "gsizes/{sp}.genome",
+        i1 = lambda wcs: "cpgi/{}.{}.bed.gz".format(wcs.sp, islands[wcs.sp][0]),
+        i2 = lambda wcs: "cpgi/{}.{}.bed.gz".format(wcs.sp, islands[wcs.sp][1]),
+        prdm9 = "prdm9/corn.prdm9.bed",
+        cross = crossFile
+    output: 
+        "shuf/{sp}/original.{spot}.bed"
+    shell: 
+        "paste <(cut -f1-3 {input.bed}) <(cut -f5 {input.heat}) | ~/bin/add_bed_id.sh "
+        "| bedtools sort -i - "
+        "| bedtools closest -a - -b <(bedtools sort -i {input.i1}) -d -t first "
+        "| bedtools closest -a - -b <(bedtools sort -i {input.i2}) -d -t first "
+        "| bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first "
+        "| bedtools closest -a - -b <(cut -f1-3 {input.cross} | bedtools sort -i) -d -t first "
+        "| python ~/bin/keep_only_dist.py -i 5 "
+        "| python ~/bin/add_comma_list_as_tabs.py "
+        "-l original,{wildcards.spot},{wildcards.sp} > {output}"
+
+rule close_shuf_spots:
+    input: 
+        bed = "spots/{sp}.{spot}.bed",
+        heat = "spots/{sp}.hotspots.bed",
+        gsize = "gsizes/{sp}.genome",
+        gaps = "gaps/{sp}.gaps.bed",
+        i1 = lambda wcs: "cpgi/{}.{}.bed.gz".format(wcs.sp, islands[wcs.sp][0]),
+        i2 = lambda wcs: "cpgi/{}.{}.bed.gz".format(wcs.sp, islands[wcs.sp][1]),
+        #prdm9 = "prdm9/{sp}.prdm9.bed",
+        prdm9 = "prdm9/corn.prdm9.bed", 
+        cross = crossFile
+    output: 
+        bed = "shuf/{sp}/{spot}.{r}.closeshuf.bed",
+        tmp = temp("tmp/{sp}.{spot}.{r}.excl.bed")
+    resources:
+        time = 23*60,
+        cpus = 1
+    shell: 
+        """
+        cat {input.bed} | cut -f1-3 > {output.tmp};
+        cat {input.gaps} >> {output.tmp};
+        while read spot;do
+          read scaf start end heat id <<<$(echo $spot);
+          incl=$(echo $spot | tr ' ' '\\t' | bedtools slop -i - -g {input.gsize} -b 2500000);
+          shuf=$(echo $spot | tr ' ' '\\t' | bedtools shuffle -i - -g {input.gsize} -noOverlapping \
+           -chrom -maxTries 10000 -excl <(cut -f1-3 {output.tmp}) -incl <(echo $incl | tr ' ' '\\t'));
+          echo $shuf | tr ' ' '\\t' | cut -f1-3 >> {output.tmp};
+          echo $shuf | tr ' ' '\\t' | bedtools sort -i - \
+          | bedtools closest -a - -b <(bedtools sort -i {input.i1}) -d -t first \
+          | bedtools closest -a - -b <(bedtools sort -i {input.i2}) -d -t first \
+          | bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first \
+          | bedtools closest -a - -b <(cut -f1-3 {input.cross} | bedtools sort -i) -d -t first \
+          | python ~/bin/keep_only_dist.py -i 5 \
+          | python ~/bin/add_comma_list_as_tabs.py -l {wildcards.r},{wildcards.spot},{wildcards.sp};
+        done < <(paste <(cut -f1-3 {input.bed}) <(cut -f5 {input.heat}) | ~/bin/add_bed_id.sh) > {output.bed}
+        """
+
+rule merge_shuf_results:
+    input: 
+        shuf = expand("shuf/{sp}/{spot}.{r}.closeshuf.bed", sp=species, spot=spots, r=range(500)),
+        og = expand("shuf/{sp}/original.{spot}.bed", sp=species, spot=spots)
+    output: 
+        "results/merged.closeshuf.tab.gz"
+    shell: 
+        "cat {input.og} {input.shuf} | gzip > {output}"
+
+rule sel_hotspots_in_fam:
+    input: 
+        hot = "spots/corn.hotspots.bed",
+        prdm9 = "prdm9/corn.prdm9.{fam}.bed",
+        cpgi = "cpgi/corn.hmm.bed.gz"
+    output: 
+        "spots/corn.hotspots.{fam}.bed"
+    shell: 
+        "cut -f1-3 {input.hot} | bedtools sort -i "
+        "| bedtools closest -a - -b <(bedtools sort -i {input.prdm9} | cut -f1-3) -d -t first "
+        "| bedtools closest -a - -b <(bedtools sort -i {input.cpgi}  | cut -f1-3) -d -t first "
+        "| python ~/bin/keep_only_dist.py -i 3 "
+        "| awk '{{if (($4>=0 && $4<500) || ($5>=0 && $5<500)) print}}' > {output}"
+
+# rule classify_crossovers_in_fam:
+#     input: 
+#         "crossovers/"
+#     output: 
+#     run: 
+
+rule sel_prdm9_in_fam:
+    input: 
+        "prdm9/corn.prdm9.bed"
+    output: 
+        "prdm9/corn.prdm9.fam.bed"
+    params:
+        alleles = "PRDM9-G|PRDM9-I|PRDM9-J|PRDM9-M"
+    shell: 
+        "egrep '{params.alleles}' {input} > {output}"
+
+rule og_crossovers:
+    input: 
+        hot = "spots/{sp}.hotspots.bed",
+        heat = "spots/{sp}.heats.bed",
+        gsize = "gsizes/{sp}.genome",
+        i1 = lambda wcs: "cpgi/{}.{}.bed.gz".format(wcs.sp, islands[wcs.sp][0]),
+        i2 = lambda wcs: "cpgi/{}.{}.bed.gz".format(wcs.sp, islands[wcs.sp][1]),
+        prdm9 = "prdm9/{sp}.prdm9.bed",
+        bed = "crossovers/Crossovers.below20kb.bed"
+    output: 
+        "shuf/{sp}/original.crossovers.bed"
+    shell: 
+        "cut -f1-3 {input.bed} | ~/bin/add_bed_id.sh "
+        "| bedtools sort -i - "
+        "| bedtools closest -a - -b <(bedtools sort -i {input.i1}) -d -t first "
+        "| bedtools closest -a - -b <(bedtools sort -i {input.i2}) -d -t first "
+        "| bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first "
+        "| bedtools closest -a - -b <(cut -f1-3 {input.hot} | bedtools sort -i) -d -t first "
+        "| python ~/bin/keep_only_dist.py -i 4 "
+        "| python ~/bin/add_comma_list_as_tabs.py "
+        "-l original,{wildcards.sp} > {output}"
+
+rule crossovers_close_shuf_spots:
+    input: 
+        hot = "spots/corn.hotspots.fam.bed",
+        heat = "spots/corn.heats.bed",
+        gsize = "gsizes/corn.genome",
+        gaps = "gaps/corn.gaps.bed",
+        i1 = "cpgi/corn.cpgplot.bed.gz",
+        i2 = "cpgi/corn.hmm.bed.gz",
+        prdm9 = "prdm9/corn.prdm9.bed",
+        bed = "crossovers/Crossovers.below20kb.bed"
+    output: 
+        bed = "shuf/corn/crossovers.{r}.closeshuf.bed",
+        tmp = temp("tmp/corn.crossovers.{r}.excl.bed")
+    resources:
+        time = 5*60,
+        cpus = 1
+    shell: 
+        """
+        cat {input.bed} | cut -f1-3 > {output.tmp};
+        cat {input.gaps} >> {output.tmp};
+        while read spot;do
+          read scaf start end heat id <<<$(echo $spot);
+          incl=$(echo $spot | tr ' ' '\\t' | bedtools slop -i - -g {input.gsize} -b 2500000);
+          shuf=$(echo $spot | tr ' ' '\\t' | bedtools shuffle -i - -g {input.gsize} -noOverlapping \
+           -chrom -maxTries 100000 -excl <(cut -f1-3 {output.tmp}) -incl <(echo $incl | tr ' ' '\\t'));
+          echo $shuf | tr ' ' '\\t' | cut -f1-3 >> {output.tmp};
+          echo $shuf | tr ' ' '\\t' | bedtools sort -i - \
+          | bedtools closest -a - -b <(bedtools sort -i {input.i1}) -d -t first \
+          | bedtools closest -a - -b <(bedtools sort -i {input.i2}) -d -t first \
+          | bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first \
+          | bedtools closest -a - -b <(cut -f1-3 {input.hot} | bedtools sort -i) -d -t first \
+          | python ~/bin/keep_only_dist.py -i 4 \
+          | python ~/bin/add_comma_list_as_tabs.py -l {wildcards.r},corn;
+        done < <(cut -f1-3 {input.bed} | ~/bin/add_bed_id.sh) > {output.bed}
+        """
+
+rule merge_crossover_shuf_results:
+    input: 
+        shuf = expand("shuf/corn/crossovers.{r}.closeshuf.bed", r=range(500)),
+        og = "shuf/corn/original.crossovers.bed"
+    output: 
+        "results/merged.crossover.closeshuf.tab.gz"
+    shell: 
+        "cat {input.og} {input.shuf} | gzip > {output}"
+
+# rule close_shuf_spots:
+#     input: 
+#         bed = "spots/{sp}.{spot}.bed",
+#         heat = "spots/{sp}.heats.bed",
+#         gsize = "gsizes/{sp}.genome",
+#         i1 = lambda wcs: "cpgi/{}.{}.bed.gz".format(wcs.sp, islands[wcs.sp][0]),
+#         i2 = lambda wcs: "cpgi/{}.{}.bed.gz".format(wcs.sp, islands[wcs.sp][1]),
+#         prdm9 = "prdm9/{sp}.prdm9.bed",
+#         cross = "crossovers/Crossovers.below20kb.bed"
+#     output: 
+#         bed = "shuf/{sp}/{spot}.{r}.closeshuf.bed",
+#         tmp = temp("tmp/{sp}.{spot}.{r}.excl.bed")
+#     run: 
+#         with open(input.bed, "r") as fh:
+#             for line in fh:
+#                 line = line.strip()
+#                 fields = line.split()
+
+# rule shuf_spots:
+#     input: 
+#         bed = "spots/{sp}.{spot}.bed",
+#         heat = "spots/{sp}.heats.bed",
+#         gsize = "gsizes/{sp}.genome",
+#         i1 = lambda wcs: "cpgi/{}.{}.bed.gz".format(wcs.sp, islands[wcs.sp][0]),
+#         i2 = lambda wcs: "cpgi/{}.{}.bed.gz".format(wcs.sp, islands[wcs.sp][1]),
+#         prdm9 = "prdm9/{sp}.prdm9.bed",
+#         cross = "crossovers/Crossovers.below20kb.bed"
+#     output: 
+#         "shuf/{sp}/{spot}.{r}.bed"
+#     shell: 
+#         "paste <(cut -f1-3 {input.bed}) <(cut -f4 {input.heat}) | ~/bin/add_bed_id.sh "
+#         "| bedtools shuffle -i - -g {input.gsize} "
+#         "-noOverlapping -chromFirst -excl {input.bed} "
+#         "-incl <(bedtools slop -i {input.bed} -g {input.gsize} -b 2500000) "
+#         "| bedtools sort -i - "
+#         "| bedtools closest -a - -b <(bedtools sort -i {input.i1}) -d -t first "
+#         "| bedtools closest -a - -b <(bedtools sort -i {input.i2}) -d -t first "
+#         "| bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first "
+#         "| bedtools closest -a - -b <(cut -f1-3 {input.cross} | bedtools sort -i) -d -t first "
+#         "| python ~/bin/keep_only_dist.py -i 5 "
+#         "| python ~/bin/add_comma_list_as_tabs.py "
+#         "-l {wildcards.r},{wildcards.spot},{wildcards.sp} > {output}"
+
+# rule merge_results:
+#     input: 
+#         shuf = expand("shuf/{sp}/{spot}.{r}.bed", sp=species, spot=spots, r=range(100)),
+#         og = expand("shuf/{sp}/original.{spot}.bed", sp=species, spot=spots)
+#     output: 
+#         "results/merged.tab.gz"
+#     shell: 
+#         "cat {input.og} {input.shuf} | gzip > {output}"

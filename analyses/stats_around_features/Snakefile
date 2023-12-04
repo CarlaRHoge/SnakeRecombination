@@ -1,0 +1,165 @@
+# paths
+cornPath = "/moto/palab/projects/recombination_snakes/corn_snakes/Final_Shared_Files/VCFs/HighCoverage_Unrelated_Filtered/INFO"
+rattPath = "/moto/palab/users/md3914/Recombination/Rattle_snakes_2021/COMBINED_GVCFs"
+gcstarPath = "/moto/palab/projects/recombination_snakes/shared_corn_rattle/gcstar"
+spots = ["hotspots", "coldspots"]
+path_dict   = {"corn":cornPath, "rattle":rattPath}
+prefix_dict = {"corn":"", "rattle":"Viridis."}
+suffix_dict = {"corn":".vcf.gz", 
+               "rattle":".genotyped.hardfiltered.gvcf.gz"}
+sp2islands =  {"corn":["cpgplot", "hmm"],
+               "rattle":["cpgplot_default", "cpgplot_schield"]}
+
+# species
+species = ["corn", "rattle"]
+chrom_dict = {}
+
+# indivs
+indvs = {}
+indv2sp = {}
+for sp in species:
+    with open("misc_files/{}.indvs.txt".format(sp), "r") as fh:
+        indvs[sp] = [line.strip() for line in fh]
+    for indv in indvs[sp]:
+        indv2sp[indv] = sp
+
+
+indvs["corn"] = ["EG431-284-2015-2","EG499","EG431-284-472","CS11","CS18"]
+indvs["rattle"] = ["Viridis_SRR10593904","Viridis_SRR10593895","Viridis_SRR10593893",
+"Viridis_SRR10593869","Viridis_SRR10593899"]
+
+# scafs
+for sp in species:
+    with open("misc_files/{}_scafs.txt".format(sp), "r") as fh:
+        chrom_dict[sp] = [line.strip() for line in fh]
+
+# Functions
+def get_input_vcfs(wcs):
+    '''Return lists of vcfs for given species'''
+    chroms = chrom_dict[wcs.species]
+    return ["{}/{}{}{}".format(path_dict[wcs.species], prefix_dict[wcs.species], c, suffix_dict[wcs.species]) for c in chroms]
+
+def get_input_islands(wcs):
+    '''Return island files for species'''
+    return "/moto/palab/projects/recombination_snakes/shared_corn_rattle/gcstar/cpgi/{}.{}.bed.gz".format(wcs.species, sp2islands[wcs.species][1])
+
+rule all:
+    input: 
+        #expand("vcfs/{species}.merged.vcf.gz", species=["corn"]),
+        #expand("vcfs/{species}.merged.vcf.gz.tbi", species=["corn"]),
+        #expand("vcfs/{species}.n_polymorphisms.txt", species=["corn"])
+        expand("regions/{species}.{spot}.bed", species=species, spot=spots),
+        #expand("regions/{species}.islands.bed", species=species)
+        #expand("stats_bam/{indv}.{region}.tab.gz", indv=indvs["corn"], region=spots + ["islands"]),
+        #expand("stats_bam/{indv}.{region}.tab.gz", indv=indvs["rattle"], region=spots + ["islands"]),
+        #expand("stats/{species}.{region}.tab.gz", species=species, region=spots + ["islands"])
+
+rule concat_vcfs:
+    input: 
+        get_input_vcfs
+    output: 
+        "vcfs/{species}.merged.vcf.gz"
+    shell: 
+        "bcftools concat {input} "
+        "| vcfsnps | vcfbiallelic "
+        "| awk '{{if (($1 ~ /^#/) || ($7==\"PASS\")) print}}'"
+        "| vcftools --vcf - --max-missing 0.25 --hwe .001 --recode --recode-INFO-all --stdout"
+        "| bgzip > {output}"
+
+rule count_polymorphisms:
+    input: 
+        "vcfs/{species}.merged.vcf.gz"
+    output: 
+        "vcfs/{species}.n_polymorphisms.txt"
+    shell: 
+        "zgrep -v '#' {input} | wc -l > {output}"
+
+rule index_vcf:
+    input: 
+        "vcfs/{species}.merged.vcf.gz"
+    output: 
+        "vcfs/{species}.merged.vcf.gz.tbi"
+    shell: 
+        "tabix -p vcf {input}"
+
+rule get_spots:
+    input: 
+        lambda wcs: "{}/misc_files/{}.{}.annotated.bed".format(gcstarPath, wcs.species, wcs.spot)
+    output: 
+        "regions/{species}.{spot}.bed"
+    shell: 
+        "cut -f4- {input} | python scripts/convert_back_region2bed.py > {output}"
+
+rule get_islands:
+    input: 
+        lambda wcs: "{}/cpgi/{}.{}.bed.gz".format(gcstarPath, wcs.species, sp2islands[wcs.species][1])
+    output: 
+        "regions/{species}.islands.bed"
+    params:
+        gdb  = lambda wcs: "{}/gsizes/{}.genome".format(gcstarPath, wcs.species),
+        hot  = lambda wcs: "regions/{}.hotspots.bed".format(wcs.species),
+        cold = lambda wcs: "regions/{}.coldspots.bed".format(wcs.species)
+    shell: 
+        "zcat {input} | awk -v sp='{wildcards.species}' '{{print $0\"\\t\"sp\".islands\"}}' "
+        "| bedtools sort -i - -g {params.gdb} "
+        "| bedtools closest -a - -b <(cut -f1-3 {params.cold} | awk '{{print $1\"\\t\"$2+5000\"\\t\"$3-5000}}' | bedtools sort -i - -g {params.gdb}) -d -t first -g {params.gdb}"
+        "| bedtools closest -a - -b <(cut -f1-3 {params.hot}  | awk '{{print $1\"\\t\"$2+5000\"\\t\"$3-5000}}' | bedtools sort -i - -g {params.gdb}) -d -t first -g {params.gdb}"
+        "| python ~/bin/keep_only_dist.py -i 4 "
+        "| awk '{{print $0\"\\tnan\\tnan\\tnan\"}}'"
+        "| bedtools slop -i - -g {params.gdb} -b 5000 > {output}"
+
+rule get_stats_around_features:
+    input: 
+        bed = "regions/{species}.{region}.bed",
+        vcf = "vcfs/{species}.merged.vcf.gz"
+    output: 
+        "stats/{species}.{region}.tab.gz"
+    params:
+        gdb  = lambda wcs: "{}/gsizes/{}.genome".format(gcstarPath, wcs.species)
+    resources:
+        time = 1300
+    shell:
+        """
+        while read region;do 
+         read start end <<<$(echo $region | awk '{{print $2"\\t"$3}}'); 
+         l=$(echo $end-$start | bc);
+         addstr=$(echo $region | tr ' ' ',')
+         cumul_pos=250;
+         while read window;do 
+          reg_window=$(echo $window| awk '{{print $1":"$2"-"$3}}'); 
+          rel_pos=$(echo "scale=5;$cumul_pos/$l" | bc);
+          tabix {input.vcf} $reg_window \
+          | python scripts/vcf_stats.py -i MQ,MQRankSum,BaseQRankSum \
+          | python scripts/add_comma_list_as_tabs.py -l $addstr,$rel_pos;
+          cumul_pos=$(echo $cumul_pos+250 | bc);
+         done < <(echo $region | cut -d" " -f-3 | tr " " "\\t" | bedtools makewindows -b - -w 1000 -s 500);
+        done < {input.bed} | gzip > {output}
+        """
+
+rule get_stats_around_features_from_bam:
+    input: 
+        bam = "bams/{indv}.bam",
+        bed = lambda wcs: "regions/{}.{}.bed".format(indv2sp[wcs.indv], wcs.region)
+    output: 
+        "stats_bam/{indv}.{region}.tab.gz"
+    resources:
+        time = 2600
+    shell:
+        """
+        export TMPDIR=$(pwd)/tmp;
+        while read region;do 
+         read start end <<<$(echo $region | awk '{{print $2"\\t"$3}}'); 
+         l=$(echo $end-$start | bc);
+         addstr=$(echo $region | tr ' ' ',')
+         cumul_pos=500;
+         while read window;do 
+          reg_window=$(echo $window| awk '{{print $1":"$2"-"$3}}'); 
+          rel_pos=$(echo "scale=5;$cumul_pos/$l" | bc);
+          samtools coverage {input.bam} -r $reg_window | grep -v '#' \
+          | python scripts/add_comma_list_as_tabs.py -l $addstr,$rel_pos \
+          | cut -f4-
+          cumul_pos=$(echo $cumul_pos+1000 | bc);
+         done < <(echo $region | cut -d" " -f-3 | tr " " "\\t" | bedtools makewindows -b - -w 1000 -s 1000);
+        done < {input.bed} | gzip > {output}
+        """
+

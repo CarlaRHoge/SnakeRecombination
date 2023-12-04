@@ -1,0 +1,214 @@
+species = ["corn", "rattle", "garter"]
+fastas = {"corn":"fastas/corn/CS_superscaffold.renamed.fasta.masked.fasta", 
+          "rattle":"fastas/rattle/CroVir_genome_L77pg_16Aug2017.final_rename.fasta.gz", 
+          "garter":"fastas/garter/Thamnophis_elegans.fasta.gz"}
+
+fai    = {"corn":"fastas/corn/CS_superscaffold.renamed.fasta.masked.fasta.fai", 
+          "rattle":"fastas/rattle/CroVir_genome_L77pg_16Aug2017.final_rename.fasta.fai", 
+          "garter":"fastas/garter/Thamnophis_elegans.fasta.fai"}
+
+n_chunks = 200
+form_chunks = [str(x+1).zfill(3) for x in range(n_chunks)]
+
+# Read SRA accessions per species
+sras = {}
+for sp in species:
+    with open("sras/{}.txt".format(sp), "r") as fh:
+        sras[sp] = [line.strip() for line in fh]
+
+rule all:
+    input:
+        #expand("bams/corn/{sra}.markdup.bam", sra=sras["corn"]),
+        #expand("bams/rattle/{sra}.markdup.bam", sra=sras["rattle"]),
+        #expand("bams/garter/{sra}.markdup.bam", sra=sras["garter"]),
+        #expand("bams/{sp}/{sp}.merged.markdup.bam", sp=species)
+        #expand("islands/{sp}/{sp}.cpgplot.gff", sp=species),
+        #expand("bams/{sp}/{sp}.merged.markdup.bam.bai", sp=species)
+        #expand("fastas/{sp}/{sp}.gsize", sp=species)
+        #expand(["islands/{{sp}}/{{sp}}.{}.gff".format(str(x+1).zfill(3)) for x in range(n_chunks)],sp=species)
+        #expand("stats_bam/{sp}.{chunk}.stab.tab.gz", sp=species, chunk=form_chunks),
+        #expand("stats_fasta/{sp}.{chunk}.tab.gz", sp=species, chunk=form_chunks)
+        expand("stats_complete/{sp}.{chunk}.tab.gz", sp=species, chunk=form_chunks)
+
+rule map_bwa_mem:
+    input: 
+        f1  = "fastqs/{sp}/{sra}_1.fastq.gz",
+        f2  = "fastqs/{sp}/{sra}_2.fastq.gz",
+        ref = lambda wcs: fastas[wcs.sp]
+    output: 
+        bam = "bams/{sp}/{sra}.bam",
+        idx = "bams/{sp}/{sra}.bam.bai"
+    resources:
+        time = 48*60,
+        cpus = 8
+    shell: 
+        "bwa mem -t 8 {input.ref} {input.f1} {input.f2} "
+        "| samtools sort -@8 -o {output.bam} - -T tmp/; "
+        "samtools index {output.bam}"
+
+rule run_cpgplot:
+    input: 
+        ref = lambda wcs: fastas[wcs.sp] 
+    output: 
+        gff = "islands/{sp}/{sp}.cpgplot.gff",
+        pre = "islands/{sp}/{sp}.cpgplot"
+    params:
+        lecat = lambda wcs: "zcat" if wcs.sp in ["garter", "rattle"] else "cat"
+    shell:  
+        """
+        {params.lecat} {input.ref} > islands/{wildcards.sp}/{wildcards.sp}.fa;
+        /moto/palab/users/md3914/software/emboss/bin/cpgplot -sequence islands/{wildcards.sp}/{wildcards.sp}.fa -outfile {output.pre} -window 100 -minlen 250 -minoe 0.6 -minpc 50 -graph png -outfeat {output.gff} -plot No;
+        """
+
+rule run_markduplicates:
+    input: 
+        "bams/{sp}/{sra}.bam"
+    output: 
+        bam = "bams/{sp}/{sra}.markdup.bam",
+        met = "bams/{sp}/{sra}.markdup.metrics.txt"
+    resources:
+        time = 600,
+        cpus = 6
+    shell: 
+        "picard MarkDuplicates -Xmx25g -I {input} -O {output.bam} -M {output.met} --TMP_DIR tmp/"
+
+rule merge_bams:
+    input: 
+        lambda wcs: ["bams/{}/{}.markdup.bam".format(wcs.sp, sra) for sra in sras[wcs.sp]]
+    output: 
+        bam = "bams/{sp}/{sp}.merged.markdup.bam",
+    shell: 
+        "samtools merge {output.bam} {input}"
+
+rule index_bams:
+    input: 
+        "bams/{sp}/{sp}.merged.markdup.bam"
+    output: 
+        "bams/{sp}/{sp}.merged.markdup.bam.bai"
+    shell: 
+        "samtools index {input}"
+
+rule create_gsizes:
+    input: 
+        lambda wcs: fai[wcs.sp]
+    output: 
+        "fastas/{sp}/{sp}.gsize"
+    shell: 
+        "cut -f1,2 {input} > {output}"
+
+rule clean_gff:
+    input: 
+        "islands/{sp}/{sp}.cpgplot.gff"
+    output: 
+        "islands/{sp}/{sp}.clean.cpgplot.gff"
+    shell: 
+        "grep cpgplot {input} > {output}"
+
+rule divide_and_conquer:
+    input: 
+        "islands/{sp}/{sp}.clean.cpgplot.gff"
+    output: 
+        chunks = ["islands/{{sp}}/{{sp}}.{}.gff".format(x) for x in form_chunks]
+    resources:
+        time = 60,
+        cpus = 1
+    shell: 
+        "split -n l/{n_chunks} -a 3 --numeric-suffixes=1 "
+        "--additional-suffix=.gff {input} islands/{wildcards.sp}/{wildcards.sp}."
+
+rule get_stats_around_features_from_bam:
+    input: 
+        bam = "bams/{sp}/{sp}.merged.markdup.bam",
+        gff = "islands/{sp}/{sp}.{chunk}.gff",
+        gsize = "fastas/{sp}/{sp}.gsize"
+    output: 
+        "stats_bam/{sp}.{chunk}.stab.tab.gz"
+    resources:
+        time = 120,
+        cpus = 1
+    params:
+        wsize = 100,
+        half_wsize = 50
+    shell:
+        """
+        export TMPDIR=$(pwd)/tmp;
+        grep cpgplot {input.gff} | cut -f1,4-5 | \
+        awk '{{if (($3-$2<2000)) print}}' | \
+        while read region; do 
+          pad=$(echo $region | awk '{{l=$3-$2; half_pad=int((10000-l)/2); print half_pad}}'); 
+          read start end <<<$(echo $region | awk '{{print $2"\\t"$3}}'); 
+          l=$(echo $end-$start | bc);
+          addstr=$(echo $region | tr ' ' ',')
+          cumul_pos={params.half_wsize};
+          while read window;do 
+            reg_window=$(echo $window | awk '{{print $1":"$2"-"$3}}'); 
+            samtools coverage {input.bam} -r $reg_window | grep -v '#' \
+            | python scripts/add_comma_list_as_tabs.py -l $addstr,$cumul_pos \
+            | cut -f4-
+            cumul_pos=$(echo $cumul_pos+{params.wsize} | bc); 
+          done < <(echo $region | tr ' ' '\\t' | bedtools slop -i - -g {input.gsize} -l $pad -r $pad | bedtools makewindows -b - -w {params.wsize} -s {params.wsize});
+        done | gzip > {output}
+        """
+
+# rule get_fasta_stats:
+#     input: 
+#         bam = "bams/{sp}/{sp}.merged.markdup.bam",
+#         gff = "islands/{sp}/{sp}.{chunk}.gff",
+#         fasta = "islands/{sp}/{sp}.fa"
+#     output: 
+#         "stats_fasta/{sp}.{chunk}.tab.gz"
+#     resources:
+#         time = 60,
+#         cpus = 1
+#     shell: 
+#         """
+#         grep cpgplot {input.gff} | cut -f1,4-5 | \
+#         while read line;do 
+#           read scaf start end<<<$(echo $line); 
+#           region=$(printf $scaf":"$start"-"$end); 
+#           dp=$(samtools depth {input.bam} -r $region -aa | awk '{{sum+=$3;n++}}END{{print sum/n}}'); 
+#           samtools faidx {input.fasta} $region | python scripts/get_stats.py \
+#           | python ~/bin/add_cl.py -l $region,$dp \
+#           | awk '{{if ((NF==8)) print}}';
+#         done | gzip > {output}
+#         """
+
+# rule merge_rmap:
+#     output: 
+#         "rmaps/{sp}.rmap.txt"
+#     shell: 
+#         "cat rmaps/{sp}/* | awk '{{print $1\"\\t\"$2\"\\t\"$NF}}' > {output}"
+
+rule get_complete_stats:
+    input: 
+        bam = "bams/{sp}/{sp}.merged.markdup.bam",
+        gff = "islands/{sp}/{sp}.{chunk}.gff",
+        fasta = "islands/{sp}/{sp}.fa",
+        rmap = "rmaps/{sp}.rmap.bed.gz",
+        vcf = "vcfs/{sp}.merged.vcf.gz",
+        prdm9 = "prdm9/{sp}.prdm9.bed.gz"
+    output: 
+        "stats_complete/{sp}.{chunk}.tab.gz"
+    resources:
+        time = 120,
+        cpus = 1
+    shell: 
+        """
+        grep cpgplot {input.gff} | cut -f1,4-5 | \
+        while read line;do 
+          read scaf start end<<<$(echo $line); 
+          region=$(printf $scaf":"$start"-"$end); 
+          rrate=$(tabix {input.rmap} $region | python scripts/wavg.py);
+          read cum_r2 psites avg_r2 <<<$(tabix -h {input.vcf} $region \
+                                         | vcftools --vcf - --geno-r2 --maf 0.05 --max-missing 1 --stdout \
+                                         | tail -n+2 \
+                                         | awk '{{r+=$NF;t++}}END{{if ((t!=0)) print r,t,r/t; else print "0 0 nan"}}')
+          prdm9_hits=$(tabix {input.prdm9} $region | wc -l);
+          paste \
+          <(samtools coverage {input.bam} -r $region | grep -v '#') \
+          <(samtools faidx {input.fasta} $region | python scripts/get_stats.py) \
+          | python ~/bin/add_cl.py -l $region,$rrate,$prdm9_hits,$psites,$avg_r2 \
+          | awk '{{if ((NF==20)) print}}';
+        done | gzip > {output}
+        """
+        

@@ -1,0 +1,106 @@
+species_l = ["corn", "rattle"]
+
+rule all:
+    input: 
+#        expand("results/{species}.{r}.bed", species = species_l, r=range(1,250)),
+#        "merged_results/results.tab.gz"
+        expand("bsite/{species}.tab", species=species_l)
+
+# rule overlap:
+#     input: 
+#         promo = "promoters/{species}.bed.gz",
+#         prdm9 = "prdm9/{species}.bed",
+#         gsize = "fastas/{species}/{species}.gsize",
+#         gaps  = "gaps/{species}.gaps.bed"
+#     output: 
+#         bed = "results/{species}.{r}.bed"
+#     shell: 
+#         '''
+#         bedtools shuffle -i {input.promo} -excl {input.gaps} -chrom -noOverlapping -g {input.gsize} -maxTries 300000 \
+#         | bedtools sort -i - \
+#         | bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first \
+#         | python ~/bin/keep_only_dist.py -i 3 \
+#         | python ~/bin/add_comma_list_as_tabs.py -l {wildcards.r},{wildcards.species} \
+#         > {output.bed}
+#         '''
+
+#          | python closest_seq.py $target || {{ echo "Command failed at: python closest_seq.py"; continue; }} \
+#          | python ~/bin/add_cl.py -l $id;
+
+# rule overlap:
+#     input: 
+#         promo = "promoters/{species}.bed.gz",
+#         prdm9 = "prdm9/{species}.bed",
+#         gsize = "fastas/{species}/{species}.gsize",
+#         gaps  = "gaps/{species}.gaps.bed",
+#         fasta = "fastas/{species}/{species}.fa"
+#     output: 
+#         bed = "results/{species}.{r}.bed"
+#     resources:
+#         cpus = 1,
+#         time = 5*60
+#     shell: 
+#         '''
+#         while read spot;do
+#           read scaf start end id <<<$(echo $spot);
+#           if (( start == end )); then
+#                 echo -e "$spot" \
+#                 | bedtools shuffle -i - -g {input.gsize} -excl {input.gaps} \
+#                 | cut -f1-3 | awk '{{print $0"\\t0"}}' \
+#                 | python ~/bin/add_cl.py -l $id;
+#                 continue;
+#           fi;
+#           target=$(echo -e "$spot" | bedtools nuc -fi {input.fasta} -bed - | grep -v usercol | cut -f6);
+#           echo -e "$spot" \
+#           | awk "{{for(i=0;i<1000;i++)print}}" \
+#           | bedtools shuffle -i - -g {input.gsize} -excl {input.gaps} -chrom \
+#           | awk '{{print $1":"$2"-"$3}}' \
+#           | xargs samtools faidx {input.fasta} \
+#           | seqkit fx2tab -i --gc - \
+#           | python closest_seq.py $target \
+#           | python ~/bin/add_cl.py -l $id;
+#         done < <(zcat {input.promo} | cut -f1-3 | ~/bin/add_bed_id.sh) \
+#         > {output.bed}
+#         '''
+
+
+rule overlap:
+    input: 
+        promo = "promoters/{species}.bed.gz",
+        prdm9 = "prdm9/{species}.bed",
+        gsize = "fastas/{species}/{species}.gsize",
+        gaps  = "gaps/{species}.gaps.bed",
+        bed = "results/{species}.{r}.bed"
+    output: 
+        bed = "results/{species}.{r}.distances.bed"
+    params:
+        idx = lambda wcs: 8 if wcs.species=="corn" else 9
+    shell: 
+        '''
+        bedtools sort -i <(awk '{{if (($1=="scaffold")) print $1"-"$2"\\t"$3"\\t"$4"\\t"$5"\\t"$6"\\t"$7"\\t"$8; else print $0}}' {input.bed} | awk '{{if ((NF==7)) print}}') \
+        | bedtools closest -a - -b <(cut -f1-3 {input.prdm9} | bedtools sort -i) -d -t first \
+        | python ~/bin/keep_only_dist.py -i 7 \
+        > {output.bed}
+        '''
+
+rule merge:
+    input: 
+        expand("results/{species}.{r}.distances.bed", species = species_l, r=range(1,250))
+    output: 
+        "merged_results/results.tab.gz"
+    shell: 
+        "cat {input} | gzip > {output}"
+
+rule bstites_gc:
+    input: 
+        fasta = "fastas/{species}/{species}.fa",
+        prdm9 = "prdm9/{species}.bed"
+    output: 
+        "bsite/{species}.tab"
+    shell: 
+        '''
+        awk '{{print $1":"$2"-"$3}}' {input.prdm9} \
+        | xargs samtools faidx {input.fasta} \
+        | seqkit fx2tab -i --gc - \
+        > {output}
+        '''

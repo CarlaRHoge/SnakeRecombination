@@ -1,0 +1,87 @@
+halFile = "/moto/palab/projects/whole-genome_alignments_cactus/HALs/snakes_hm2.hal"
+ctypes = ["macro", "micro"]
+
+rule all:
+    input: 
+        #expand("liftover/corn.{sp}.tab.gz", sp=["Crotalus_viridis", "Naja_naja"])
+        #expand("ctypes/{ctype}.bed", ctype=ctypes),
+        #"map/ldelmet.bed"
+        #"corn_macro_micro_dnazoo.tab"
+        #expand("ctypes/{ctype}.bed", ctype=ctypes),
+        expand("stats/{ctype}.tab", ctype=ctypes)
+
+rule get_pairwise_divergence:
+    input: 
+        halFile
+    output: 
+        "liftover/corn.{sp}.tab.gz"
+    params:
+        gsize = "../gcstar/gsizes/corn.genome",
+        l = 100000,
+    resources:
+        time = 600,
+        cpus = 1
+    shell: 
+        """
+        bedtools makewindows -g {params.gsize} -w {params.l} \
+        | halLiftover {halFile} Pantherophis_guttatus stdin {wildcards.sp} /dev/stdout \
+        --outPSLWithName --noDupes | cut -f11,13-15,17-18 \
+        | gzip > {output};
+        """
+
+rule build_ctypes:
+    input: 
+        categ = "corn_macro_micro_dnazoo.tab",
+        gsize = "../gcstar/gsizes/corn.genome"
+    output: 
+        "ctypes/{ctype}.bed"
+    shell: 
+        """
+        grep {wildcards.ctype} {input.categ} | cut -f1 | \
+        while read chrom;do
+          awk -v c="$chrom" '{{if (($1==c)) print $1\"\t1\t\"$2}}' {input.gsize};
+        done > {output}
+        """
+
+rule combine_ldhelmet_map:
+    output: 
+        "map/ldelmet.bed"
+    params:
+        mapPath = "/moto/palab/projects/recombination_snakes/corn_snakes/Final_Shared_Files/LDHelmet/Maps/1kb",
+        gsize = "../gcstar/gsizes/corn.genome"
+    shell: 
+        "cat {params.mapPath}/*_cf1_lkupd_1kb_rates_clean.dict_1kb_ldhelmet.bed "
+        "| sed 's/_bp20_cf1_lkupd_1kb_rates_clean.dict//g' | bedtools sort -i - -g {params.gsize} "
+        "> {output}"
+
+rule get_stats_ctypes:
+    input: 
+        categ = "ctypes/{ctype}.bed",
+        rmap = "map/ldelmet.bed"
+    output: 
+        "stats/{ctype}.tab"
+    params:
+        gsize = "../gcstar/gsizes/corn.genome"
+    shell: 
+        "bedtools sort -i {input.categ} -g {params.gsize} "
+        "| bedtools map -a - -b {input.rmap} -c 4 -o mean -g {params.gsize} "
+        "| bedtools map -a - -b crossovers/Crossovers.all.below20kb.bed -c 5 -o count -g {params.gsize} "
+        "| bedtools map -a - -b features/corn.tss.bed.gz -c 4 -o count -g {params.gsize} "
+        "| bedtools map -a - -b <(zcat features/corn.cpgi.bed.gz | bedtools sort -i - -g {params.gsize}) -c 3 -o count -g {params.gsize} "
+        "| bedtools map -a - -b <(zcat features/corn.prdm9.bed.gz | bedtools sort -i - -g {params.gsize}) -c 3 -o count -g {params.gsize} "
+        "| bedtools map -a - -b <(cat spots/corn.hotspots.bed | bedtools sort -i - -g {params.gsize}) -c 3 -o count -g {params.gsize} "
+        "| bedtools annotate -i - -files spots/corn.hotspots.bed cpgi/corn.hmm.bed.gz features/corn.prdm9.bed.gz features/corn.rmsk.bed.gz "        
+        "| bedtools nuc -bed - -fi fasta/CS_superscaffold.renamed.fasta.masked.fasta "
+        "| python ~/bin/add_cl.py -l {wildcards.ctype} > {output}"
+
+rule carla_classification:
+    input: 
+        macro = "/moto/palab/projects/recombination_snakes/corn_snakes/Final_Shared_Files/Macrochromosomes.txt",
+        micro = "/moto/palab/projects/recombination_snakes/corn_snakes/Final_Shared_Files/Microchromosomes.txt"
+    output: 
+        "corn_macro_micro_dnazoo.tab"
+    shell: 
+        """
+        printf 'scaf\tnature\n' > {output};
+        cat <(awk '{{print $0\"\\tmacro\"}}' {input.macro}) <(awk '{{print $0\"\\tmicro\"}}' {input.micro}) >> {output}
+        """

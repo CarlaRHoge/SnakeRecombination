@@ -1,0 +1,26 @@
+
+halFile = "/moto/palab/projects/whole-genome_alignments_cactus/HALs/snakes_hm2.hal"
+
+rule all:
+    input: 
+        expand("divergence/Pantherophis_guttatus.{rep}.tab.gz", rep=range(100))
+
+rule get_pairwise_divergence:
+    input: 
+        halFile
+    output: 
+        "divergence/{ref}.{rep}.tab.gz"
+    params:
+        gsize = "../gcstar/gsizes/corn.genome",
+        l = 10000000,
+    shell: 
+        """
+        bedtools random -g {params.gsize} -l {params.l} -n 1 | cut -f1-3 |
+        while read region;do 
+          read scaf start end<<<$(echo $region);
+          hal2maf {halFile} /dev/stdout --refGenome {wildcards.ref} \
+          --refSequence $scaf --onlyOrthologs --noDupes --start $start --length {params.l} | \
+          python scripts/divergence_from_maf.py | \
+          python ~/bin/add_comma_list_as_tabs.py -l $scaf,$start,{wildcards.ref},{wildcards.rep};
+        done | gzip > {output}
+        """
